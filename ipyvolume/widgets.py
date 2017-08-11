@@ -8,10 +8,11 @@ import traitlets
 import logging
 import numpy as np
 from .serialize import array_cube_png_serialization, array_serialization, array_sequence_serialization,\
-    color_serialization, image_serialization
+    color_serialization, image_serialization, texture_serialization
 from .transferfunction import *
 import warnings
 import ipyvolume
+import ipywebrtc
 
 logger = logging.getLogger("ipyvolume")
 
@@ -35,11 +36,12 @@ class Mesh(widgets.DOMWidget):
     triangles =  Array(default_value=None, allow_none=True).tag(sync=True, **array_serialization)
     lines =  Array(default_value=None, allow_none=True).tag(sync=True, **array_serialization)
     texture = traitlets.Union([
+        traitlets.Instance(ipywebrtc.MediaStream),
         Unicode(),
         traitlets.List(Unicode, [], allow_none=True),
-        Image(default_value=None, allow_none=True).tag(**image_serialization),
-        traitlets.List(Image(default_value=None, allow_none=True)).tag(**image_serialization)
-    ]).tag(sync=True)
+        Image(default_value=None, allow_none=True),
+        traitlets.List(Image(default_value=None, allow_none=True))
+    ]).tag(sync=True, **texture_serialization)
 
 #    selected = Array(default_value=None, allow_none=True).tag(sync=True, **array_sequence_serialization)
     sequence_index = Integer(default_value=0).tag(sync=True)
@@ -82,7 +84,7 @@ class Scatter(widgets.DOMWidget):
 
 
 @widgets.register
-class Figure(widgets.DOMWidget):
+class Figure(ipywebrtc.MediaStream):
     """Widget class representing a volume (rendering) using three.js"""
     _view_name = Unicode('FigureView').tag(sync=True)
     _view_module = Unicode('ipyvolume').tag(sync=True)
@@ -112,10 +114,6 @@ class Figure(widgets.DOMWidget):
     specular_coefficient = traitlets.Float(0.5).tag(sync=True)
     specular_exponent = traitlets.Float(5).tag(sync=True)
     stereo = traitlets.Bool(False).tag(sync=True)
-    screen_capture_enabled = traitlets.Bool(False).tag(sync=True)
-    screen_capture_mime_type = traitlets.Unicode(default_value='image/png').tag(sync=True)
-    screen_capture_data = traitlets.Unicode(default_value=None, allow_none=True).tag(sync=True)
-    fullscreen = traitlets.Bool(False).tag(sync=True)
 
     camera_control = traitlets.Unicode(default_value='trackball').tag(sync=True)
     camera_fov = traitlets.CFloat(45,min=0.1,max=179.9).tag(sync=True)
@@ -129,11 +127,16 @@ class Figure(widgets.DOMWidget):
     ylim = traitlets.List(traitlets.CFloat, default_value=[0, 1], minlen=2, maxlen=2).tag(sync=True)
     zlim = traitlets.List(traitlets.CFloat, default_value=[0, 1], minlen=2, maxlen=2).tag(sync=True)
 
+    matrix_projection = traitlets.List(traitlets.CFloat, default_value=[0] * 16, allow_none=True, minlen=16, maxlen=16).tag(sync=True)
+    matrix_world = traitlets.List(traitlets.CFloat, default_value=[0] * 16, allow_none=True, minlen=16, maxlen=16).tag(sync=True)
+
     xlabel = traitlets.Unicode("x").tag(sync=True)
     ylabel = traitlets.Unicode("y").tag(sync=True)
     zlabel = traitlets.Unicode("z").tag(sync=True)
 
-    style = traitlets.Dict(default_value=ipyvolume.style.default).tag(sync=True)
+    style = traitlets.Dict(default_value=ipyvolume.styles.default).tag(sync=True)
+
+    render_continuous = traitlets.Bool(False).tag(sync=True)
 
     #xlim = traitlets.Tuple(traitlets.CFloat(0), traitlets.CFloat(1)).tag(sync=True)
     #y#lim = traitlets.Tuple(traitlets.CFloat(0), traitlets.CFloat(1)).tag(sync=True)
@@ -142,6 +145,7 @@ class Figure(widgets.DOMWidget):
     def __init__(self, **kwargs):
         super(Figure, self).__init__(**kwargs)
         self._screenshot_handlers = widgets.CallbackDispatcher()
+        self._lasso_handlers = widgets.CallbackDispatcher()
         self.on_msg(self._handle_custom_msg)
 
     def screenshot(self, width=None, height=None):
@@ -153,7 +157,20 @@ class Figure(widgets.DOMWidget):
     def _handle_custom_msg(self, content, buffers):
         if content.get('event', '') == 'screenshot':
             self._screenshot_handlers(content['data'])
+        if content.get('event', '') == 'lasso':
+            self._lasso_handlers(content['data'])
 
+    def on_lasso(self, callback, remove=False):
+        self._lasso_handlers.register_callback(callback, remove=remove)
+
+    def project(self, x, y, z):
+        W = np.matrix(self.matrix_world).reshape((4,4))     .T
+        P = np.matrix(self.matrix_projection).reshape((4,4)).T
+        M = np.dot(P, W)
+        vertices = np.array([x, y, z, np.ones(len(x))])#.T
+        p = np.array(np.dot(M, vertices))
+        p = p / p[3]
+        return p
 
 def _volume_widets(v, lighting=False):
     import ipywidgets
@@ -178,13 +195,6 @@ def _volume_widets(v, lighting=False):
         v.ambient_coefficient = 1
         v.diffuse_coefficient = 0
         v.specular_coefficient = 0
-
-    if 1:
-        stereo = widgets.ToggleButton(value=v.stereo, description='stereo', icon='eye')
-        fullscreen = widgets.ToggleButton(value=v.stereo, description='fullscreen', icon='arrows-alt')
-        ipywidgets.jslink((v, 'stereo'), (stereo, 'value'))
-        ipywidgets.jslink((v, 'fullscreen'), (fullscreen, 'value'))
-        widgets_bottom += [ipywidgets.HBox([stereo,fullscreen])]
 
     return ipywidgets.VBox(
         [v.tf.control(), v,

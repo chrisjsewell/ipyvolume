@@ -1,5 +1,11 @@
-define(["@jupyter-widgets/base", "underscore", "three", "three-text2d", "gl-matrix", "d3"] ,
-        function(widgets, _, THREE, THREEtext2d, glm, d3) {
+widgets = require("@jupyter-widgets/base")
+_ = require("underscore")
+THREE = require("three")
+THREEtext2d = require("three-text2d")
+glm = require("gl-matrix")
+d3 = require("d3")
+screenfull = require("screenfull")
+require('style!css!./style.css')
 
 // same strategy as: ipywidgets/jupyter-js-widgets/src/widget_core.ts, except we use ~
 // so that N.M.x is allowed (we don't care about x, but we assume 0.2.x is not compatible with 0.3.x
@@ -60,9 +66,61 @@ var FigureView = widgets.DOMWidgetView.extend( {
         this.update_counter = 0
         var width = this.model.get("width");
         var height = this.model.get("height");
+
+        this.toolbar_div = document.createElement('div')
+        this.el.appendChild(this.toolbar_div)
+
+        // set up fullscreen button
+        // this is per view, so it's not exposed on the python side
+        // which is ok, since it can only be triggered from a UI action
+        this.fullscreen_link = document.createElement('a')
+        this.fullscreen_link.className = 'ipyvolume-toolicon'
+        this.fullscreen_link.setAttribute('href', '#')
+        this.fullscreen_li = document.createElement('li')
+        this.fullscreen_li.className = 'fa fa-arrows-alt'
+        this.fullscreen_link.appendChild(this.fullscreen_li)
+        this.toolbar_div.appendChild(this.fullscreen_link)
+        this.fullscreen_link.onclick = _.bind(function() {
+            var el = this.renderer.domElement
+            var old_width = el.style.width
+            var old_height = el.style.height
+            var restore = _.bind(function() {
+                if(!screenfull.isFullscreen) {
+                    console.log('is not fullscreen')
+                    console.log('restore and detach')
+                    el.style.width = old_width;
+                    el.style.height = old_height
+                    screenfull.off('change', restore)
+                } else {
+                    console.log('is fullscreen')
+                    el.style.width = '100vw'
+                    el.style.height = '100vh'
+                }
+                this.update_size()
+            }, this)
+            screenfull.onchange(restore)
+            screenfull.request(el);
+        }, this);
+
+        this.stereo_link = document.createElement('a')
+        this.stereo_link.className = 'ipyvolume-toolicon'
+        this.stereo_link.setAttribute('href', '#')
+        this.stereo_li = document.createElement('li')
+        this.stereo_li.className = 'fa fa-eye'
+        this.stereo_link.appendChild(this.stereo_li)
+        this.toolbar_div.appendChild(this.stereo_link)
+        this.stereo_li.onclick = _.bind(function() {
+            this.model.set('stereo', !this.model.get('stereo'))
+            this.model.save_changes()
+        }, this)
+
+
+
+        // set up WebGL using threejs
         this.renderer = new THREE.WebGLRenderer({antialias: true});
         this.el.classList.add("jupyter-widgets");
         this.el.appendChild(this.renderer.domElement);
+        this.el.setAttribute('tabindex', '1') // make sure we can have focus
 
         // el_mirror is a 'mirror' dom tree that d3 needs
         // we use it to attach axes and tickmarks to the dom
@@ -77,7 +135,7 @@ var FigureView = widgets.DOMWidgetView.extend( {
         const NEAR = 0.01;
         const FAR = 10000;
         const orthoNEAR = -500;
-        const orthoFAR = 1000;        
+        const orthoFAR = 1000;
         this.camera = new THREE.CombinedCamera(
             window.innerWidth/2,
             window.innerHeight/2,
@@ -204,6 +262,16 @@ var FigureView = widgets.DOMWidgetView.extend( {
         this.screen_camera = new THREE.OrthographicCamera( 1 / - 2, 1 / 2, 1 / 2, 1 / - 2, -10000, 10000 );
         this.screen_camera.position.z = 10;
 
+
+        // we rely here on these events listeners to be executed before those of the controls
+        // since we disable the controls, seems to work on chrome
+        this.renderer.domElement.addEventListener('mousedown', _.bind(this._mouse_down, this), false);
+        this.renderer.domElement.addEventListener('mousemove', _.bind(this._mouse_move, this), false);
+        window.addEventListener('mouseup', _.bind(this._mouse_up, this), false);
+        this.capture_mouse = false
+        this.mouse_trail = [] // list of x, y positions
+
+
         this.control_trackball = new THREE.TrackballControls( this.camera, this.renderer.domElement );
         this.control_orbit = new THREE.OrbitControls( this.camera, this.renderer.domElement );
         this.control_trackball.noPan = true;
@@ -259,10 +327,11 @@ var FigureView = widgets.DOMWidgetView.extend( {
         //*
         this.el.addEventListener( 'change', _.bind(this.update, this) ); // remove when using animation loop
 
-        this.model.on('change:screen_capture_enabled', this._real_update, this);
         this.model.on('change:xlabel change:ylabel change:zlabel change:camera_control', this.update, this);
+        this.model.on('change:render_continuous', this.update, this)
         this.model.on('change:style', this.update, this);
         this.model.on('change:xlim change:ylim change:zlim ', this.update, this);
+        this.model.on('change:xlim change:ylim change:zlim ', this._save_matrices, this);
         this.model.on('change:downscale', this.update_size, this);
         this.model.on('change:stereo', this.update_size, this);
         this.model.on('change:anglex change:angley change:anglez', this.update_current_control, this);
@@ -274,7 +343,6 @@ var FigureView = widgets.DOMWidgetView.extend( {
 
         this.model.on('change:width', this.update_size, this);
         this.model.on('change:height', this.update_size, this);
-        this.model.on('change:fullscreen', this.update_fullscreen, this);
 
         this.model.on('change:ambient_coefficient', this.update_light, this);
         this.model.on('change:diffuse_coefficient', this.update_light, this);
@@ -290,7 +358,6 @@ var FigureView = widgets.DOMWidgetView.extend( {
         this.control_orbit.addEventListener( 'change', _.bind(this.update, this) );
 
         this.renderer.domElement.addEventListener( 'resize', _.bind(this.on_canvas_resize, this), false );
-        THREEx.FullScreen.addFullScreenChangeListener(_.bind(this.on_fullscreen_change, this))
         this.update()
 
         this.meshes = []
@@ -338,27 +405,98 @@ var FigureView = widgets.DOMWidgetView.extend( {
 
         window.last_volume = this;
         //navigator.wakeLock.request("display")
-        
+
         //ensure initial sync of view with figure model
         this.update_current_control();
         this.update_light();
-        
-        return
+
+        this.el.addEventListener("keydown", _.bind(this._special_keys_down, this));
+        this.el.addEventListener("keyup", _.bind(this._special_keys_up, this));
+        this.el.addEventListener("mousedown", _.bind(this._special_keys_down, this));
+        this.el.addEventListener("keyup", _.bind(this._special_keys_up, this));
+        var stream = this.renderer.domElement.captureStream()
+        this.model.stream = Promise.resolve(stream)
+        window.last_figure_stream = (stream)
+        console.log('set this figure as last stream')
+    },
+    _mouse_down: function(e) {
+        console.log('mouse down', e)
+        window.last_event = e
+        if(e.ctrlKey) {
+            console.log('pressed ctrl and mouse down')
+            this.capture_mouse = true
+            this.control_trackball.enabled = false
+            this.control_orbit.enabled = false
+        }
+    },
+    _mouse_move: function(e) {
+        if (!e)
+        var e = event;
+        var mouseX, mouseY;
+        if (e.offsetX) {
+            mouseX = e.offsetX;
+            mouseY = e.offsetY;
+        }
+        else if (e.layerX) {
+            mouseX = e.layerX;
+            mouseY = e.layerY;
+        }
+        if(this.capture_mouse)
+            this.mouse_trail.push([mouseX, mouseY])
+    },
+    _mouse_up: function(e) {
+        if(this.capture_mouse) {
+            this.control_trackball.enabled = true
+            this.control_orbit.enabled = true
+            this.capture_mouse = false
+            console.log('mouse trail', this.mouse_trail)
+            var data = {}
+            var canvas = this.renderer.domElement
+            data['pixel'] = this.mouse_trail
+            // gl's normalized device coordinates, [-1, 1]
+            data['device'] = _.map(this.mouse_trail, function(xy) {
+                return [xy[0] / canvas.clientWidth * 2 - 1, 1 - xy[1] / canvas.clientHeight * 2]
+            }, this)
+            this.send({event: 'lasso', data: data});
+            // send event..
+            this.mouse_trail = []
+        }
+        if(e.ctrlKey) {
+            console.log('pressed ctrl')
+        }
+    },
+    _special_keys_down: function(e) {
+        var evtobj = window.event? event : e
+        if(evtobj.altKey) {
+            console.log('pressed alt')
+        }
+        if(evtobj.ctrlKey) {
+            console.log('pressed ctrl')
+        }
+    },
+    _special_keys_up: function(e) {
+        var evtobj = window.event? event : e
+        if(evtobj.altKey) {
+            console.log('released alt')
+        }
+        if(evtobj.ctrlKey) {
+            console.log('released ctrl')
+        }
     },
     custom_msg: function(content) {
         console.log('content', content)
         if(content.msg == 'screenshot') {
             resize = content.width && content.height
             if(resize)
-                this.update_size(true, content.width, content.height)
+                this._update_size(true, content.width, content.height)
             try {
                 this._real_update()
-                var data = this.renderer.domElement.toDataURL(this.model.get('screen_capture_mime_type'));
+                var data = this.renderer.domElement.toDataURL(content.mime_type || 'image/png');
                 console.info("captured screen data to screen_capture_data")
                 this.send({event: 'screenshot', data: data});
             } finally {
                 if(resize)
-                    this.update_size(false)
+                    this._update_size(false)
             }
         }
     },
@@ -540,43 +678,8 @@ var FigureView = widgets.DOMWidgetView.extend( {
         console.log(event)
         var code = event.keyCode || event.which;
         if (event.keyCode == 27) {
-            console.log("exit fullscreen")
-            this.model.set("fullscreen", false)
         }
         if (event.key == 'f') {
-            console.log("toggle fullscreen")
-            this.model.set("fullscreen", !this.model.get("fullscreen"))
-        }
-    },
-    on_fullscreen_change: function() {
-        var elem = THREEx.FullScreen.element()
-        console.log("fullscreen event")
-        if(elem == this.renderer.domElement) {
-            console.log("fullscreen")
-            // TODO: we should actually reflect the fullscreen, since if it fails, we still have the fullscreen model var
-            // set to true
-            this.update_size()
-        } else {
-            if(this.model.get("fullscreen")) {
-                console.log("left fullscreen")
-                this.model.set("fullscreen", false)
-                this.model.save()
-            }
-        }
-    },
-    update_fullscreen: function() {
-        if(this.model.get("fullscreen")) {
-            console.log("request fullscreen for:")
-            console.log(this.renderer.domElement)
-            THREEx.FullScreen.request(this.renderer.domElement)
-        } else {
-            console.log("cancel fullscreen for:")
-            console.log(this.renderer.domElement)
-            // make sure we exit fullscreen
-            var elem = THREEx.FullScreen.element()
-            if(elem == this.renderer.domElement)
-                THREEx.FullScreen.cancel();
-            this.update_size()
         }
     },
     update_angles: function() {
@@ -584,29 +687,63 @@ var FigureView = widgets.DOMWidgetView.extend( {
         var rotation = new THREE.Euler().setFromQuaternion(this.camera.quaternion, this.model.get('angle_order'));
         this.model.set({anglex: rotation.x, angley: rotation.y, anglez: rotation.z})
         this.model.save_changes()
+        this._save_matrices()
         this.update()
+    },
+    _get_scale_matrix: function() {
+        // go from [0, 1] to [-0.5, 0.5]
+        var matrix = new THREE.Matrix4()
+        matrix.makeTranslation(-0.5, -0.5, -0.5)
+
+        var matrix_scale = new THREE.Matrix4()
+        var x = this.model.get('xlim')
+        var y = this.model.get('ylim')
+        var z = this.model.get('zlim')
+        var sx = 1/(x[1] - x[0])
+        var sy = 1/(y[1] - y[0])
+        var sz = 1/(z[1] - z[0])
+        matrix_scale.makeScale(sx, sy, sz)
+        var translation = new THREE.Matrix4()
+        translation.makeTranslation(-x[0], -y[0], -z[0])
+        matrix.multiply(matrix_scale)
+        matrix.multiply(translation)
+        return matrix;
+    },
+    _get_view_matrix() {
+        // we don't really properly use the worldmatrix, rendering threejs's frustum culling
+        // useless, we maybe should change this
+        // https://github.com/mrdoob/three.js/issues/78#issuecomment-846917
+        var view_matrix = this.camera.matrixWorldInverse.clone()
+        view_matrix.multiply(this._get_scale_matrix().clone())
+        return view_matrix;
+    },
+    _save_matrices: function() {
+        this.model.set('matrix_projection', this.camera.projectionMatrix.elements.slice())
+        this.model.set('matrix_world', this._get_view_matrix().elements.slice())
+        console.log('setting matrices')
+        this.model.save_changes()
     },
     getTanDeg: function(deg) {
       var rad = deg * Math.PI/180;
       return Math.tan(rad);
     },
-    
+
     update_current_control: function() {
         var euler = new THREE.Euler(this.model.get('anglex'), this.model.get('angley'), this.model.get('anglez'), this.model.get('angle_order'))
-        console.log("updating camera", euler)
+        //console.log("updating camera", euler)
         var q = new THREE.Quaternion().setFromEuler(euler)
         //this.camera.quaternion = q
-        
+
         var oldfov = this.camera.fov
         var newfov = this.model.get("camera_fov")
         this.camera.setFov(newfov);
-        
+
         var target = new THREE.Vector3()
-        var distance = this.camera.position.length()  
+        var distance = this.camera.position.length()
         // change distance to account for new fov angle
-        // see maartenbreddels/ipyvolume#40 for explanation     
+        // see maartenbreddels/ipyvolume#40 for explanation
         var newdist = distance * this.getTanDeg(oldfov/2) / this.getTanDeg(newfov/2)
-        
+
         var eye = new THREE.Vector3(0, 0, 1);
         var up = new THREE.Vector3(0, 1, 0);
         eye.applyQuaternion(q)
@@ -618,7 +755,8 @@ var FigureView = widgets.DOMWidgetView.extend( {
         this.control_trackball.position0 = this.camera.position.clone()
         this.control_trackball.up0 = this.camera.up.clone()
         this.control_trackball.reset()
-        console.log("updating camera", q, this.camera, eye, distance, up, this.camera.position)
+        //console.log("updating camera", q, this.camera, eye, distance, up, this.camera.position)
+        this._save_matrices()
         this.update()
     },
     update: function() {
@@ -716,6 +854,7 @@ var FigureView = widgets.DOMWidgetView.extend( {
             var size = this.renderer.getSize();
             if (this.camera.parent === null ) this.camera.updateMatrixWorld();
             this.camera_stereo.eyeSep = this.model.get('eye_separation')/100;
+            this.camera.focus = this.camera.cameraP.focus
             this.camera_stereo.update(this.camera)
 
             // left eye
@@ -734,20 +873,12 @@ var FigureView = widgets.DOMWidgetView.extend( {
             this.renderer.setScissorTest( false );
             this.renderer.setViewport( 0, 0, size.width, size.height );
         }
-        if(this.model.get('screen_capture_enabled')) {
-            var data = this.renderer.domElement.toDataURL(this.model.get('screen_capture_mime_type'));
-            console.info("captured screen data to screen_capture_data")
-            this.model.save({screen_capture_data: data}, {patch: true})
-        } else {
-            if(this.model.get("screen_capture_data") != null) {
-                console.log("clearing screen_capture_data")
-                this.model.save({screen_capture_data: null}, {patch: true})
-            }
-        }
         this.transitions = transitions_todo;
         if(this.transitions.length > 0) {
             this.update()
         }
+        if(this.model.get('render_continuous'))
+            this.update()
     },
     get_style_color: function(name) {
         style = this.get_style(name)
@@ -869,24 +1000,31 @@ var FigureView = widgets.DOMWidgetView.extend( {
         this.box_material_volr.uniforms.specular_exponent.value = this.model.get("specular_exponent")
         this.update()
     },
-    
-    update_size: function(skip_update, width, height) {
+    update_size: function() {
+        this._update_size()
+    },
+    _update_size: function(skip_update, custom_width, custom_height) {
         console.log("update size")
-        var width = width || this.model.get("width");
-        var height = height || this.model.get("height");
+        var width;
+        var height;
+        var el = this.renderer.domElement
+        if(this.is_fullscreen()) {
+            width = custom_width || el.clientWidth
+            height = custom_height || el.clientHeight;
+        } else {
+            width = custom_width || this.model.get("width");
+            height = custom_height || this.model.get("height");
+        }
+
+        // the offscreen rendering can be of lower resolution
         var render_width = width;
         var render_height = height;
-        this.renderer.setSize(width, height);
-        if(this.model.get("fullscreen")) {
-            this.renderer.setSize(window.innerWidth, window.innerHeight);
-            if(!this.model.get("volume_data")) { // no volume data means full rendering
-                console.log("do a fullscreen render")
-                render_width  = window.innerWidth
-                render_height = window.innerHeight
-            }
-        } else {
-            this.renderer.setSize(width, height);
+        if(this.is_fullscreen() && this.model.get("volume_data")) {
+            // fullscreen volume rendering is slow, respect width and height
+            render_width = custom_width || this.model.get("width");
+            render_height = custom_height || this.model.get("height");
         }
+        this.renderer.setSize(width, height, false);
 
         if(this.model.get("stereo")) {
             render_width /= 2;
@@ -897,7 +1035,7 @@ var FigureView = widgets.DOMWidgetView.extend( {
         var aspect = render_width / render_height;
         this.camera.aspect = aspect
         this.camera.updateProjectionMatrix();
-        console.log("render width: " +render_width)
+        console.log("render size: ", width, height, render_width, render_height)
         this.back_texture = new THREE.WebGLRenderTarget( render_width, render_height, { minFilter: THREE.LinearFilter, magFilter: THREE.NearestFilter});
         this.front_texture = new THREE.WebGLRenderTarget( render_width, render_height, { minFilter: THREE.LinearFilter, magFilter: THREE.NearestFilter});
         this.volr_texture = new THREE.WebGLRenderTarget( render_width, render_height, { minFilter: THREE.LinearFilter, magFilter: THREE.NearestFilter});
@@ -951,6 +1089,12 @@ var FigureView = widgets.DOMWidgetView.extend( {
             this.box_material_volr.uniforms.transfer_function.value = this.texture_tf
             this.update()
         }
+    },
+    fullscreen: function() {
+        screenfull.request(this.el)
+    },
+    is_fullscreen: function() {
+        return screenfull.element === this.renderer.domElement
     }
 });
 
@@ -973,10 +1117,6 @@ var FigureModel = widgets.DOMWidgetModel.extend({
             specular_coefficient: 0.5,
             specular_exponent: 5,
             stereo: false,
-            screen_capture_enabled: false,
-            screen_capture_mime_type: 'image/png',
-            screen_capture_data: null,
-            fullscreen: false,
             camera_control: 'trackball',
             camera_fov: 45,
             width: 500,
@@ -993,7 +1133,8 @@ var FigureModel = widgets.DOMWidgetModel.extend({
             zlabel: 'z',
             animation: 1000,
             animation_exponent: 0.5,
-            style: styles['light']
+            style: styles['light'],
+            render_continuous: false,
         })
     }
 }, {
@@ -1022,14 +1163,12 @@ var WidgetManagerHackModel = widgets.WidgetModel.extend({
         window.jupyter_widgets = widgets
     }
 });
-    return {
-        WidgetManagerHackModel: WidgetManagerHackModel,
-        FigureModel: FigureModel,
-        FigureView: FigureView,
-    };
 
-
-})
+module.exports = {
+    WidgetManagerHackModel: WidgetManagerHackModel,
+    FigureModel: FigureModel,
+    FigureView: FigureView,
+};
 
 
 //////////////////

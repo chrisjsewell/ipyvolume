@@ -132,12 +132,12 @@ setup_args = {
         ]),
     ],
     'install_requires': [
-        'ipywidgets>=6.0.0b5',
+        'ipywidgets>=7.0.0b7',
         'numpy',
         'traittypes',
         'traitlets',
-        'Pillow'
-
+        'Pillow',
+        'ipywebrtc'
     ],
     'license': 'MIT',
     'packages': find_packages(),

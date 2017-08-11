@@ -3,7 +3,7 @@ _last_figure = None
 import ipywidgets
 from IPython.display import display
 import IPython
-from . import volume
+import ipyvolume as ipv
 import ipyvolume.embed
 import os
 import numpy as np
@@ -68,19 +68,17 @@ def figure(key=None, width=400, height=500, lighting=True, controls=True, contro
         current.figure = current.figures[key]
         current.container = current.containers[key]
     else:
-        current.figure = volume.Figure(volume_data=None, width=width, height=height, **kwargs)
+        current.figure = ipv.Figure(volume_data=None, width=width, height=height, **kwargs)
         current.container = ipywidgets.VBox()
         current.container.children = [current.figure]
         if key is not None:
             current.figures[key] = current.figure
             current.containers[key] = current.container
         if controls:
-            stereo = ipywidgets.ToggleButton(value=current.figure.stereo, description='stereo', icon='eye')
-            fullscreen = ipywidgets.ToggleButton(value=current.figure.stereo, description='fullscreen',
-                                                 icon='arrows-alt')
-            l1 = ipywidgets.jslink((current.figure, 'stereo'), (stereo, 'value'))
-            l2 = ipywidgets.jslink((current.figure, 'fullscreen'), (fullscreen, 'value'))
-            current.container.children += (ipywidgets.HBox([stereo, fullscreen]),)
+            #stereo = ipywidgets.ToggleButton(value=current.figure.stereo, description='stereo', icon='eye')
+            #l1 = ipywidgets.jslink((current.figure, 'stereo'), (stereo, 'value'))
+            #current.container.children += (ipywidgets.HBox([stereo, ]),)
+            pass # stereo and fullscreen are now include in the js code (per view)
         if controls_vr:
             eye_separation = ipywidgets.FloatSlider(value=current.figure.eye_separation, min=-10, max=10, icon='eye')
             ipywidgets.jslink((eye_separation, 'value'), (current.figure, 'eye_separation'))
@@ -174,7 +172,7 @@ def plot_trisurf(x, y, z, triangles, color=default_color, u=None, v=None, textur
 
     The following plots a rectangle in the z==2 plane, consisting of 2 triangles
 
-    plot_trisurf([0, 0, 3., 3.], [0, 4., 0, 4.], 2, triangles=[[0, 2, 3], [0, 3, 1]])
+    >>> plot_trisurf([0, 0, 3., 3.], [0, 4., 0, 4.], 2, triangles=[[0, 2, 3], [0, 3, 1]])
 
     Note that the z value is constant, and thus not a list/array. For guidance, the triangles
     refer to the vertices in this manner:
@@ -184,17 +182,19 @@ def plot_trisurf(x, y, z, triangles, color=default_color, u=None, v=None, textur
     2 3
     0 1  ---> x dir
 
+    Note that if you want per face/triangle colors, you need to duplicate each vertex.
+
 
     :param x: {x}
     :param y:
     :param z:
-    :param triangles: ndarray with indices referring to the vertices, defining the triangles, with shape (N, 3)
+    :param triangles: ndarray with indices referring to the vertices, defining the triangles, with shape (M, 3)
     :param color: {color}
     :return:
     """
     fig = gcf()
     triangles = np.array(triangles).astype(dtype=np.uint32)
-    mesh = volume.Mesh(x=x, y=y, z=z, triangles=triangles, color=color, u=u, v=v, texture=texture)
+    mesh = ipv.Mesh(x=x, y=y, z=z, triangles=triangles, color=color, u=u, v=v, texture=texture)
     _grow_limits(np.array(x).reshape(-1), np.array(y).reshape(-1), np.array(z).reshape(-1))
     fig.meshes = fig.meshes + [mesh]
     return mesh
@@ -314,7 +314,7 @@ def plot_mesh(x, y, z, color=default_color, wireframe=True, surface=True, wrapx=
             lines[triangle_index * 4 + 2, :] = [p2, p3]
             lines[triangle_index * 4 + 3, :] = [p1, p3]
     # print(i, j, p0, p1, p2, p3)
-    mesh = volume.Mesh(x=x, y=y, z=z, triangles=triangles if surface else None, color=color,
+    mesh = ipv.Mesh(x=x, y=y, z=z, triangles=triangles if surface else None, color=color,
                        lines=lines if wireframe else None,
                        u=u, v=v, texture=texture)
     fig.meshes = fig.meshes + [mesh]
@@ -340,7 +340,7 @@ def scatter(x, y, z, color=default_color, size=default_size, size_selected=defau
     """
     fig = gcf()
     _grow_limits(x, y, z)
-    scatter = volume.Scatter(x=x, y=y, z=z, color=color, size=size, color_selected=color_selected,
+    scatter = ipv.Scatter(x=x, y=y, z=z, color=color, size=size, color_selected=color_selected,
                              size_selected=size_selected, geo=marker, selection=selection, **kwargs)
     fig.scatters = fig.scatters + [scatter]
     return scatter
@@ -366,7 +366,7 @@ def quiver(x, y, z, u, v, w, size=default_size * 10, size_selected=default_size_
     """
     fig = gcf()
     _grow_limits(x, y, z)
-    scatter = volume.Scatter(x=x, y=y, z=z, vx=u, vy=v, vz=w,
+    scatter = ipv.Scatter(x=x, y=y, z=z, vx=u, vy=v, vz=w,
                              color=color, size=size, color_selected=color_selected, size_selected=size_selected,
                              geo=marker, **kwargs)
     fig.scatters = fig.scatters + [scatter]
@@ -465,7 +465,7 @@ def transfer_function(level=[0.1, 0.5, 0.9], opacity=[0.01, 0.05, 0.1], level_wi
         tf_kwargs["level" + str(i)] = level[i - 1]
         tf_kwargs["opacity" + str(i)] = opacity[i - 1]
         tf_kwargs["width" + str(i)] = level_width[i - 1]
-    tf = volume.TransferFunctionWidgetJs3(**tf_kwargs)
+    tf = ipv.TransferFunctionWidgetJs3(**tf_kwargs)
     fig = gcf()
     if controls:
         current.container.children = (tf.control(),) + current.container.children
@@ -568,7 +568,7 @@ def volshow(data, lighting=False, data_min=None, data_max=None, tf=None, stereo=
 
 def save(filename, copy_js=True, makedirs=True, **kwargs):
     """Save the figure/visualization as html file, and optionally copy the .js file to the same directory """
-    ipyvolume.embed.embed_html(filename, current.container, 
+    ipyvolume.embed.embed_html(filename, current.container,
                        makedirs=makedirs, copy_js=copy_js, **kwargs)
 
 def _change_y_angle(fig, frame, fraction):
@@ -773,11 +773,11 @@ class style:
             styles = [style]
         else:
             styles = style
-        totalstyle = utils.dict_deep_update({}, ipyvolume.style._defaults)
+        totalstyle = utils.dict_deep_update({}, ipyvolume.styles._defaults)
         for style in styles:
             if isinstance(style, six.string_types):
-                if hasattr(ipyvolume.style, style):
-                    style = getattr(ipyvolume.style, style)
+                if hasattr(ipyvolume.styles, style):
+                    style = getattr(ipyvolume.styles, style)
                 else:
                     # lets see if we can copy matplotlib's style
                     # we assume now it's a matplotlib style, get all properties that we understand
@@ -793,3 +793,53 @@ class style:
 
         fig = gcf()
         fig.style = totalstyle
+
+def plot_square(where="back", texture=None, flip=False, color=None):
+    fig = gcf()
+    xmin, xmax = fig.xlim
+    ymin, ymax = fig.ylim
+    zmin, zmax = fig.ylim
+    if where == "back":
+        x = [xmin, xmax, xmax, xmin]
+        y = [ymin, ymin, ymax, ymax]
+        z = [zmin, zmin, zmin, zmin]
+    if where == "front":
+        x = [xmin, xmax, xmax, xmin][::-1]
+        y = [ymin, ymin, ymax, ymax]
+        z = [zmax, zmax, zmax, zmax]
+    if where == "left":
+        x = [xmin, xmin, xmin, zmin]
+        y = [ymin, ymin, ymax, ymax]
+        z = [zmin, zmax, zmax, zmin]
+    if where == "right":
+        x = [xmax, xmax, xmax, zmax]
+        y = [ymin, ymin, ymax, ymax]
+        z = [zmin, zmax, zmax, zmin][::-1]
+    triangles = [(0, 1, 2), (0, 2, 3)]
+    u = v = None
+    if texture is not None:
+        u = [0., 1., 1., 0.]
+        v = [0., 0., 1., 1.]
+    mesh = plot_trisurf(x, y, z, triangles, texture=texture, u=u, v=v)
+    return mesh
+def selector_lasso(output_widget=None):
+    fig = gcf()
+    if output_widget is None:
+        output_widget = ipywidgets.Output()
+        display(output_widget)
+    def lasso(data, other=None, fig=fig):
+        with output_widget:
+            if data['device']:
+                import shapely.geometry
+                region = shapely.geometry.Polygon(data['device'])
+                for scatter in fig.scatters:
+                    xyz_projected = fig.project(scatter.x, scatter.y, scatter.z)
+                    points = xyz_projected.T[:,:2]
+                    selected = []
+                    for i, p in enumerate(points):
+                        #print(i, p)
+                        if region.contains(shapely.geometry.Point(p)):
+                            selected.append(i)
+                    if selected:
+                        scatter.selected = selected
+    fig.on_lasso(lasso)
